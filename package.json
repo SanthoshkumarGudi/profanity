@@ -2,7 +2,7 @@
   "name": "my-app",
   "version": "0.1.0",
   "private": true,
-  "homepage": "https://SanthoshkumarGudi.github.io/sigvitas",
+  "homepage": "https://SanthoshkumarGudi.github.io/profanity",
   "predeploy": "npm run build",
   "deploy": "gh-pages -d build",
   "dependencies": {
