@@ -1,19 +1,24 @@
+// src/App.js
 import React, { useState } from 'react';
 import PizZip from 'pizzip';
 import { saveAs } from 'file-saver';
+import FileUpload from './components/FileUpload';
+import WordReplacementSelector from './components/WordReplacementSelector';
+import WordCountsTable from './components/WordCountsTable';
+import Confirmation from './components/Confirmation';
 
 function App() {
   // State variables to manage file input, errors, word counts, matched words, confirmation status, and the updated file
   const [file, setFile] = useState(null); // The uploaded .docx file
   const [error, setError] = useState(null); // Error messages
-  const [wordCounts, setWordCounts] = useState({}); // Counts of each matched word
-  const [matchedWords, setMatchedWords] = useState({}); // Matched words and their replacements
+  const [wordCounts, setWordCounts] = useState({}); // Counts of each matched predefined word
+  const [matchedWords, setMatchedWords] = useState({}); // Matched predefined words and their replacements
   const [confirmationNeeded, setConfirmationNeeded] = useState(false); // Flag to show confirmation before download
   const [updatedFile, setUpdatedFile] = useState(null); // The updated .docx file after replacements
-  const [matchedKeys, setMatchedKeys] = useState([]); // Array of keys that were matched in the document
-  const [replacementSelections, setReplacementSelections] = useState({}); // User-selected replacements for each key
+  const [matchedKeys, setMatchedKeys] = useState([]); // Array of predefined words that were matched in the document
+  const [replacementSelections, setReplacementSelections] = useState({}); // User-selected replacements for each predefined word
   const [showReplacementSelector, setShowReplacementSelector] = useState(false); // Flag to show replacement selection UI
-  const [tags, setTags] = useState([]);
+  const [claimTermCounts, setClaimTermCounts] = useState({}); // Counts of each matched claim-specific term
 
   // Predefined words to search for and their replacement options
   const predefinedWords = {
@@ -51,13 +56,14 @@ function App() {
     'Every': ['each'],
   };
 
+  // Claim-specific terms to search and highlight in red
   const claimSpecificTerms = [
     'at least one',
     'at least two',
     'one or more',
     'plurality of',
-    'wherein'
-  ]
+    'wherein',
+  ];
 
   // Function to escape special regex characters in a string
   function escapeRegExp(string) {
@@ -87,6 +93,7 @@ function App() {
       setMatchedKeys([]); // Reset matched keys
       setReplacementSelections({}); // Reset replacement selections
       setShowReplacementSelector(false); // Hide replacement selector UI
+      setClaimTermCounts({}); // Reset claim term counts
     }
   };
 
@@ -98,9 +105,6 @@ function App() {
         reader.onload = async (e) => {
           const arrayBuffer = e.target.result; // Get the file content as an array buffer
           const uint8Array = new Uint8Array(arrayBuffer); // Convert to Uint8Array
-
-          console.log('ArrayBuffer:', arrayBuffer);
-          console.log('Uint8Array:', uint8Array);
 
           let zip;
           try {
@@ -119,42 +123,38 @@ function App() {
           }
 
           const xmlString = documentXml.asText();
-          console.log(xmlString);
 
           // Parse the XML content
           const parser = new DOMParser();
           const xmlDoc = parser.parseFromString(xmlString, 'application/xml');
 
-          // Get all elements in the document
-          const allElements = document.getElementsByTagName("*");
-          // Create a Set to store unique tag names
-          const tagNames = new Set();
-          for (const element of allElements) {
-            tagNames.add(element.tagName.toLowerCase());
-          }
-          // Convert the Set to an array if needed
-          const tagNamesArray = Array.from(tagNames);
-
-          console.log("tag names are", tagNamesArray);
-
-          console.log("xml string", xmlDoc);
           const wNamespace = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 
           // Initialize variables to keep track of counts and matched words
           let counts = {};
           let matchedKeysArray = [];
+          let claimCounts = {};
+          let matchedClaimKeysArray = [];
+
+          let isInDetailedDescription = false; // Flag to track if currently in "Detailed Description" section
 
           // Recursive function to traverse XML nodes
           const traverseNodes = (nodes) => {
-            console.log("nodes length is", nodes.length);
-
             for (let i = 0; i < nodes.length; i++) {
               const node = nodes[i];
 
               // Check for paragraphs to process
               if (node.nodeName === 'w:p') {
+                // Determine if this paragraph is a heading for "Detailed Description"
+                const isHeading = isParagraphHeading(node, xmlDoc, 'Detailed Description');
+
+                if (isHeading) {
+                  isInDetailedDescription = true; // Entering "Detailed Description" section
+                  continue; // Skip processing the heading paragraph itself
+                }
+
                 // Process the paragraph to find matches
-                processParagraph(node);
+                processParagraph(node, isInDetailedDescription);
                 continue; // Continue to the next node
               }
 
@@ -165,8 +165,26 @@ function App() {
             }
           };
 
+          // Function to determine if a paragraph is a heading with specific text
+          const isParagraphHeading = (paragraphNode, xmlDoc, headingText) => {
+            const paragraphText = getParagraphText(paragraphNode, xmlDoc).trim().toLowerCase();
+            // console.log("paragraph text is ", paragraphText);
+
+            return paragraphText === headingText.toLowerCase();
+          };
+
+          // Function to extract the full text content of a paragraph
+          const getParagraphText = (paragraphNode, xmlDoc) => {
+            let text = '';
+            const runs = paragraphNode.getElementsByTagName('w:t');
+            for (let i = 0; i < runs.length; i++) {
+              text += runs[i].textContent;
+            }
+            return text;
+          };
+
           // Function to process a paragraph and find matches
-          const processParagraph = (paragraphNode) => {
+          const processParagraph = (paragraphNode, isDetailedDescription) => {
             // Collect all runs and their text content
             let runs = [];
             let concatenatedText = '';
@@ -174,8 +192,6 @@ function App() {
 
             const paragraphChildNodes = paragraphNode.childNodes;
             for (let j = 0; j < paragraphChildNodes.length; j++) {
-              console.log("paragraphs nodes length", paragraphChildNodes.length);
-
               const child = paragraphChildNodes[j];
               if (child.nodeName === 'w:r') {
                 let runText = '';
@@ -189,13 +205,7 @@ function App() {
                       xmlSpacePreserve = true;
                     }
                     runText += grandChild.textContent;
-                    console.log("run text is ", runText);
-                    if (runText == 'DESCRIPTION') {
-                      console.log("found de", 'grandchild node is', child);
-                    }
-
                   }
-
                 }
 
                 // Include runs even if they contain only whitespace
@@ -206,13 +216,8 @@ function App() {
                 });
 
                 const startIndex = concatenatedText.length;
-                console.log("start index is", startIndex);
-
                 concatenatedText += runText;
-                console.log("concatenated string is", concatenatedText);
                 const endIndex = concatenatedText.length;
-                console.log("end index is", endIndex);
-
                 runPositions.push({
                   start: startIndex,
                   end: endIndex,
@@ -220,15 +225,12 @@ function App() {
                 });
               }
             }
-            console.log(runs.length);
-
 
             if (runs.length === 0) return; // No runs to process
 
-            // Perform searches to identify matched keys
+            // Perform searches to identify matched predefined words
             for (const key of Object.keys(predefinedWords)) {
               let regex;
-              //it checks for key contains any non word characters
               if (/\W/.test(key)) {
                 regex = new RegExp(escapeRegExp(key), 'gi');
               } else {
@@ -242,25 +244,45 @@ function App() {
                   matchedKeysArray.push(key);
                 }
               }
+            }
 
-
+            // If in "Detailed Description", search for claim-specific terms
+            if (isDetailedDescription) {
+              for (const term of claimSpecificTerms) {
+                let regex = new RegExp(`\\b${escapeRegExp(term)}\\b`, 'gi');
+                let match;
+                while ((match = regex.exec(concatenatedText)) !== null) {
+                  claimCounts[term] = (claimCounts[term] || 0) + 1;
+                  if (!matchedClaimKeysArray.includes(term)) {
+                    matchedClaimKeysArray.push(term);
+                  }
+                }
+              }
             }
           };
 
           // Start traversing from the document element
           traverseNodes(xmlDoc.documentElement.childNodes);
-          if (matchedKeysArray.length === 0) {
-            alert('No profanity words found in the document');
+
+          if (matchedKeysArray.length === 0 && matchedClaimKeysArray.length === 0) {
+            alert('No predefined words or claim-specific terms found in the document');
             return;
           }
 
           // Update state variables with the results
           setWordCounts(counts);
           setMatchedKeys(matchedKeysArray);
+          setClaimTermCounts(claimCounts); // Update claim-specific term counts
+          setMatchedWords(
+            matchedKeysArray.reduce((acc, key) => {
+              acc[key] = predefinedWords[key];
+              return acc;
+            }, {})
+          );
           setConfirmationNeeded(false); // Reset confirmation flag
           setUpdatedFile(null); // Reset updated file
 
-          // Now, prompt the user to select replacements
+          // Now, prompt the user to select replacements for predefined words
           setReplacementSelections(
             matchedKeysArray.reduce((acc, key) => {
               acc[key] = predefinedWords[key][0]; // Default to the first option
@@ -273,15 +295,15 @@ function App() {
 
         reader.readAsArrayBuffer(file); // Read the file as an array buffer
       } catch (error) {
-        console.error('Error performing replacements:', error);
-        setError('Error performing replacements');
+        console.error('Error performing search:', error);
+        setError('Error performing search');
       }
     } else {
       alert('Please upload a .docx file');
     }
   };
 
-  // Handler for when the user selects a replacement for a key
+  // Handler for when the user selects a replacement for a predefined word
   const handleReplacementChange = (key, selectedReplacement) => {
     setReplacementSelections((prev) => ({
       ...prev,
@@ -289,16 +311,13 @@ function App() {
     }));
   };
 
-  // Handler to perform replacements based on user selections
+  // Handler to perform replacements and highlight claim-specific terms
   const handlePerformReplacement = async () => {
     try {
       const reader = new FileReader();
       reader.onload = async (e) => {
         const arrayBuffer = e.target.result; // Get the file content as an array buffer
         const uint8Array = new Uint8Array(arrayBuffer); // Convert to Uint8Array
-
-        console.log('ArrayBuffer for Replacement:', arrayBuffer);
-        console.log('Uint8Array for Replacement:', uint8Array);
 
         let zip;
         try {
@@ -321,24 +340,35 @@ function App() {
         // Parse the XML content 
         const parser = new DOMParser();
         const xmlDoc = parser.parseFromString(xmlString, 'application/xml');
-        const detailedDescription = xmlDoc.getElementsByTagName('detailed_descrption');
-
-        if (detailedDescription) {
-          console.log("ssssssssssssssssssssssssssssssss", detailedDescription.textContent)
-        } else {
-          console.log("tag not found");
-        }
 
         const wNamespace = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 
-        // Recursive function to traverse XML nodes and perform replacements
+        // Initialize variables to keep track of counts and matched words
+        // Reuse existing counts or reset as needed
+
+        let isInDetailedDescription = false; // Flag to track if currently in "Detailed Description" section
+
+        // Recursive function to traverse XML nodes and perform replacements and highlights
         const traverseAndReplace = (nodes) => {
           for (let i = 0; i < nodes.length; i++) {
             const node = nodes[i];
 
             // Check for paragraphs to process
             if (node.nodeName === 'w:p') {
-              processParagraph(node);
+              // Determine if this paragraph is a heading for "Detailed Description"
+              const isHeading = isParagraphHeading(node, xmlDoc, 'Detailed Description');
+
+              if (isHeading) {
+                isInDetailedDescription = true; // Entering "Detailed Description" section
+                continue; // Skip processing the heading paragraph itself
+              }
+
+              // Optionally, determine if we've exited the "Detailed Description" section
+              // For simplicity, assume that once we enter, all subsequent paragraphs are part of it
+              // unless another heading is encountered. Adjust as needed based on document structure.
+
+              // Process the paragraph to perform replacements and highlights
+              processParagraph(node, isInDetailedDescription);
               continue; // Continue to the next node
             }
 
@@ -349,8 +379,24 @@ function App() {
           }
         };
 
-        // Function to process a paragraph and perform replacements
-        const processParagraph = (paragraphNode) => {
+        // Function to determine if a paragraph is a heading with specific text
+        const isParagraphHeading = (paragraphNode, xmlDoc, headingText) => {
+          const paragraphText = getParagraphText(paragraphNode, xmlDoc).trim().toLowerCase();
+          return paragraphText === headingText.toLowerCase();
+        };
+
+        // Function to extract the full text content of a paragraph
+        const getParagraphText = (paragraphNode, xmlDoc) => {
+          let text = '';
+          const runs = paragraphNode.getElementsByTagName('w:t');
+          for (let i = 0; i < runs.length; i++) {
+            text += runs[i].textContent;
+          }
+          return text;
+        };
+
+        // Function to process a paragraph and perform replacements and highlights
+        const processParagraph = (paragraphNode, isDetailedDescription) => {
           // Collect all runs and their text content
           let runs = [];
           let concatenatedText = '';
@@ -394,7 +440,7 @@ function App() {
           if (runs.length === 0) return; // No runs to process
 
           // Perform replacements on the concatenated text
-          let replacements = []; // Array of objects {start, end, replacement, oldWord}
+          let replacements = []; // Array of objects {start, end, replacement, oldWord, highlightColor, isClaimTerm}
 
           for (const [oldWord, selectedReplacement] of Object.entries(replacementSelections)) {
             let regex;
@@ -411,16 +457,35 @@ function App() {
                 end: match.index + match[0].length,
                 replacement: selectedReplacement,
                 oldWord: oldWord,
+                highlightColor: 'yellow', // Highlight color for replacements
               });
             }
           }
 
-          if (replacements.length === 0) return; // No replacements needed
+          // If in "Detailed Description", search for claim-specific terms for red highlighting
+          if (isDetailedDescription) {
+            for (const term of claimSpecificTerms) {
+              let regex = new RegExp(`\\b${escapeRegExp(term)}\\b`, 'gi');
+              let match;
+              while ((match = regex.exec(concatenatedText)) !== null) {
+                replacements.push({
+                  start: match.index,
+                  end: match.index + match[0].length,
+                  replacement: match[0], // No replacement, keep original text
+                  oldWord: term,
+                  highlightColor: 'red', // Highlight color for claim-specific terms
+                  isClaimTerm: true, // Flag to indicate claim-specific term
+                });
+              }
+            }
+          }
+
+          if (replacements.length === 0) return; // No replacements or highlights needed
 
           // Sort replacements by start index
           replacements.sort((a, b) => a.start - b.start);
 
-          // Build new runs with replacements
+          // Build new runs with replacements and highlights
           let newRuns = [];
           let replacementIndex = 0; // Index in replacements array
 
@@ -456,15 +521,19 @@ function App() {
                   newRuns.push(runNode);
                 }
 
-                // Replacement text with highlighting
+                // Replacement text with appropriate highlighting
                 const replacementText = rep.replacement;
+                const highlight = rep.isClaimTerm ? true : rep.replacement !== rep.oldWord;
+                const highlightColor = rep.isClaimTerm ? 'red' : 'yellow';
+
                 const runNode = createRunNode(
                   xmlDoc,
                   wNamespace,
                   replacementText,
                   originalRunProperties,
                   originalRun.xmlSpacePreserve,
-                  true // Apply highlight
+                  highlight,
+                  highlightColor
                 );
                 newRuns.push(runNode);
 
@@ -487,9 +556,6 @@ function App() {
             }
           }
 
-
-
-
           // Remove all original runs
           for (let r = 0; r < runs.length; r++) {
             paragraphNode.removeChild(runs[r].node);
@@ -501,14 +567,15 @@ function App() {
           }
         };
 
-        // Helper function to create a run node
+        // Helper function to create a run node with customizable highlight color
         const createRunNode = (
           xmlDoc,
           wNamespace,
           textContent,
           originalRunProperties,
           xmlSpacePreserve,
-          highlight = false
+          highlight = false,
+          highlightColor = 'yellow' // Default highlight color
         ) => {
           const runNode = xmlDoc.createElementNS(wNamespace, 'w:r');
 
@@ -527,8 +594,16 @@ function App() {
               }
               if (!highlightExists) {
                 const highlightNode = xmlDoc.createElementNS(wNamespace, 'w:highlight');
-                highlightNode.setAttribute('w:val', 'yellow');
+                highlightNode.setAttribute('w:val', highlightColor);
                 rPrNode.appendChild(highlightNode);
+              } else {
+                // If highlight exists, update its color
+                for (let child of rPrNode.childNodes) {
+                  if (child.nodeName === 'w:highlight') {
+                    child.setAttribute('w:val', highlightColor);
+                    break;
+                  }
+                }
               }
             }
 
@@ -537,7 +612,7 @@ function App() {
             // Create run properties if they don't exist and add highlight
             const rPrNode = xmlDoc.createElementNS(wNamespace, 'w:rPr');
             const highlightNode = xmlDoc.createElementNS(wNamespace, 'w:highlight');
-            highlightNode.setAttribute('w:val', 'yellow');
+            highlightNode.setAttribute('w:val', highlightColor);
             rPrNode.appendChild(highlightNode);
             runNode.appendChild(rPrNode);
           }
@@ -586,7 +661,7 @@ function App() {
   const handleConfirmDownload = async () => {
     try {
       if (updatedFile) {
-        // Download the updated file with replacements
+        // Download the updated file with replacements and highlights
         saveAs(updatedFile, 'edited-document.docx');
         setConfirmationNeeded(false); // Reset confirmation flag after download
       }
@@ -599,22 +674,21 @@ function App() {
   // Function to download matched words and their replacements as a .txt file
   const downloadMatchedWordsAsTxt = () => {
     // Define column widths for formatting
-    const colWidth1 = 25; // Width for profanity words
+    const colWidth1 = 25; // Width for predefined words
     const colWidth2 = 40; // Width for alternative words
     const colWidth3 = 10; // Width for count
 
     // Create table header with borders
-    const header = `Profanity Words${' '.repeat(colWidth1 - 'Profanity Words'.length)}| Alternative Words${' '.repeat(colWidth2 - 'Alternative Words'.length)}| Count`;
+    const header = `Predefined Words${' '.repeat(colWidth1 - 'Predefined Words'.length)}| Alternative Words${' '.repeat(colWidth2 - 'Alternative Words'.length)}| Count`;
     const border = `${'-'.repeat(colWidth1)}+${'-'.repeat(colWidth2)}+${'-'.repeat(colWidth3)}`;
 
     // Initialize rows array to store each row of data
     let rows = [];
 
-    // Loop through matched words and their counts
-    for (const [word, altWord] of Object.entries(matchedWords)) {
-      const count = wordCounts[word] || 0;
+    // Loop through matched predefined words and their counts
+    for (const [word, count] of Object.entries(wordCounts)) {
       const wordCol = word.padEnd(colWidth1, ' ');
-      const altCol = altWord.padEnd(colWidth2, ' ');
+      const altCol = predefinedWords[word].join(', ').padEnd(colWidth2, ' ');
       const countCol = count.toString().padEnd(colWidth3, ' ');
       rows.push(`${wordCol}| ${altCol}| ${countCol}`);
     }
@@ -624,7 +698,7 @@ function App() {
 
     // Create a Blob and trigger the download
     const blob = new Blob([fileContent], { type: 'text/plain;charset=utf-8' });
-    saveAs(blob, 'MatchedProfanityWords.txt');
+    saveAs(blob, 'MatchedPredefinedWords.txt');
   };
 
   // Styles for the table display
@@ -645,103 +719,42 @@ function App() {
       <h1>Profanity Word Replacer</h1>
 
       {/* File input for uploading .docx files */}
-      <div style={{ marginBottom: '20px' }}>
-        <input type="file" accept=".docx" onChange={handleFileChange} />
-      </div>
+      <FileUpload handleFileChange={handleFileChange} error={error} />
 
       {/* Buttons for processing and downloading */}
       <div style={{ marginBottom: '20px' }}>
         <button onClick={handleSearchReplace} style={{ marginRight: '10px' }}>
           Search and Replace
         </button>
-        <button onClick={downloadMatchedWordsAsTxt} disabled={Object.keys(wordCounts).length === 0}>
-          Download Matched Profanity Words as .txt
+        <button
+          onClick={downloadMatchedWordsAsTxt}
+          disabled={Object.keys(wordCounts).length === 0 && Object.keys(claimTermCounts).length === 0}
+        >
+          Download Matched Words as .txt
         </button>
       </div>
 
       {/* Replacement Selection UI */}
       {showReplacementSelector && (
-        <div>
-          <h3>Select Replacements for Matched Words:</h3>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              handlePerformReplacement();
-            }}
-          >
-            {matchedKeys.map((key) => (
-              <div key={key} style={{ marginBottom: '10px' }}>
-                <label style={{ marginRight: '10px' }}>{key}:</label>
-                <select
-                  value={replacementSelections[key]}
-                  onChange={(e) => handleReplacementChange(key, e.target.value)}
-                >
-                  {predefinedWords[key].map((option, index) => (
-                    <option key={index} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            ))}
-            <button type="submit" style={{ marginTop: '10px' }}>
-              Perform Replacements
-            </button>
-          </form>
-        </div>
+        <WordReplacementSelector
+          matchedKeys={matchedKeys}
+          replacementSelections={replacementSelections}
+          predefinedWords={predefinedWords}
+          handleReplacementChange={handleReplacementChange}
+          handlePerformReplacement={handlePerformReplacement}
+        />
       )}
 
-      {/* Display word counts if replacements were made and no confirmation is pending */}
-      {Object.keys(wordCounts).length > 0 && !confirmationNeeded && !showReplacementSelector && (
-        <div>
-          <h3>Word Counts:</h3>
-          <table style={tableStyle}>
-            <thead>
-              <tr>
-                <th style={thTdStyle}>Word</th>
-                <th style={thTdStyle}>Replacement</th>
-                <th style={thTdStyle}>Count</th>
-              </tr>
-            </thead>
-            <tbody>
-              {Object.entries(wordCounts).map(([word, count]) => (
-                <tr key={word}>
-                  <td style={thTdStyle}>{word}</td>
-                  <td style={thTdStyle}>{predefinedWords[word].join(', ')}</td>
-                  <td style={thTdStyle}>{count}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {/* Display word counts and claim-specific term counts */}
+      {(Object.keys(wordCounts).length > 0 || Object.keys(claimTermCounts).length > 0) &&
+        !confirmationNeeded &&
+        !showReplacementSelector && (
+          <WordCountsTable wordCounts={wordCounts} predefinedWords={predefinedWords} claimTermCounts={claimTermCounts} />
+        )}
 
       {/* Confirmation prompt before downloading the updated file */}
       {confirmationNeeded && (
-        <div>
-          <h3>Confirm Replacement</h3>
-          <table style={tableStyle}>
-            <thead>
-              <tr>
-                <th style={thTdStyle}>Profanity Word</th>
-                <th style={thTdStyle}>Alternative Word</th>
-                <th style={thTdStyle}>Count</th>
-              </tr>
-            </thead>
-            <tbody>
-              {Object.entries(wordCounts).map(([word, count]) => (
-                <tr key={word}>
-                  <td style={thTdStyle}>{word}</td>
-                  <td style={thTdStyle}>{replacementSelections[word]}</td>
-                  <td style={thTdStyle}>{count}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <button onClick={handleConfirmDownload} style={{ marginTop: '10px' }}>
-            Confirm and Download
-          </button>
-        </div>
+        <Confirmation wordCounts={wordCounts} replacementSelections={replacementSelections} handleConfirmDownload={handleConfirmDownload} />
       )}
 
       {/* Display any error messages */}
